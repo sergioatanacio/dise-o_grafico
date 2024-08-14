@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor de Dibujo Avanzado</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="p-4">
+    <div class="mb-4 flex items-center flex-wrap">
+        <select id="shapeSelector" class="mr-2 p-2 border rounded">
+            <option value="circle">Círculo</option>
+            <option value="square">Cuadrado</option>
+        </select>
+        <label class="mr-2">
+            Relleno:
+            <input type="color" id="fillColor" class="ml-1">
+        </label>
+        <label class="mr-2">
+            Borde:
+            <input type="color" id="strokeColor" class="ml-1">
+        </label>
+        <label class="mr-2">
+            Ancho del borde:
+            <input type="number" id="strokeWidth" class="ml-1 w-16 p-1 border rounded" value="1" min="1" max="20">
+        </label>
+        <input type="text" id="shapeText" class="mr-2 p-2 border rounded" placeholder="Texto">
+        <button id="deleteButton" class="p-2 bg-red-500 text-white rounded mr-2">Eliminar seleccionado</button>
+        <button id="undoButton" class="p-2 bg-blue-500 text-white rounded mr-2">Deshacer</button>
+        <button id="redoButton" class="p-2 bg-blue-500 text-white rounded">Rehacer</button>
+    </div>
+
+    <div class="flex">
+        <canvas id="drawingCanvas" width="500" height="500" class="border border-gray-300"></canvas>
+        <div id="layerContainer" class="ml-4 w-40 p-2 border border-gray-300 rounded">
+            <h2 class="text-lg font-bold mb-2">Capas</h2>
+            <ul id="layers" class="space-y-2">
+                <!-- Las capas se generarán dinámicamente aquí -->
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('drawingCanvas');
+        const ctx = canvas.getContext('2d');
+        let shapes = [];
+        let selectedShape = null;
+        let isResizing = false;
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+        let history = [[]];
+        let historyIndex = 0;
+        let clipboard = null;
+
+        function drawShapes() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            shapes.forEach((shape, index) => {
+                ctx.fillStyle = shape.fillColor;
+                ctx.strokeStyle = shape.strokeColor;
+                ctx.lineWidth = shape.strokeWidth || 1;
+                
+                if (shape.type === 'circle') {
+                    ctx.beginPath();
+                    ctx.arc(shape.x, shape.y, shape.radius, 0, 2 * Math.PI);
+                    ctx.fill();
+                    ctx.stroke();
+                } else if (shape.type === 'square') {
+                    ctx.fillRect(shape.x - shape.size / 2, shape.y - shape.size / 2, shape.size, shape.size);
+                    ctx.strokeRect(shape.x - shape.size / 2, shape.y - shape.size / 2, shape.size, shape.size);
+                }
+
+                if (shape.text) {
+                    ctx.fillStyle = shape.strokeColor;
+                    ctx.font = '16px Arial';
+                    ctx.fillText(shape.text, shape.x, shape.y);
+                }
+
+                if (index === selectedShape) {
+                    drawHandles(shape);
+                }
+            });
+            updateLayerList();
+        }
+
+        function drawHandles(shape) {
+            const handleSize = 8;
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 1;
+
+            const drawHandle = (x, y) => {
+                ctx.fillRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+                ctx.strokeRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+            };
+
+            if (shape.type === 'circle') {
+                drawHandle(shape.x + shape.radius, shape.y);
+                drawHandle(shape.x - shape.radius, shape.y);
+                drawHandle(shape.x, shape.y + shape.radius);
+                drawHandle(shape.x, shape.y - shape.radius);
+            } else if (shape.type === 'square') {
+                const halfSize = shape.size / 2;
+                drawHandle(shape.x + halfSize, shape.y + halfSize);
+                drawHandle(shape.x - halfSize, shape.y + halfSize);
+                drawHandle(shape.x + halfSize, shape.y - halfSize);
+                drawHandle(shape.x - halfSize, shape.y - halfSize);
+            }
+        }
+
+        function addToHistory(newShapes) {
+            const newHistory = history.slice(0, historyIndex + 1);
+            newHistory.push(JSON.parse(JSON.stringify(newShapes)));
+            history = newHistory;
+            historyIndex = newHistory.length - 1;
+            shapes = newShapes;
+            drawShapes();
+        }
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            const clickedShapeIndex = shapes.findIndex(shape => 
+                shape.type === 'circle' 
+                    ? Math.sqrt((x - shape.x) ** 2 + (y - shape.y) ** 2) <= shape.radius
+                    : Math.abs(x - shape.x) <= shape.size / 2 && Math.abs(y - shape.y) <= shape.size / 2
+            );
+
+            if (clickedShapeIndex !== -1) {
+                selectedShape = clickedShapeIndex;
+                updateControls();
+            } else {
+                selectedShape = null;
+                const newShape = document.getElementById('shapeSelector').value === 'circle'
+                    ? { type: 'circle', x, y, radius: 20, fillColor: document.getElementById('fillColor').value, strokeColor: document.getElementById('strokeColor').value, strokeWidth: document.getElementById('strokeWidth').value, text: document.getElementById('shapeText').value }
+                    : { type: 'square', x, y, size: 40, fillColor: document.getElementById('fillColor').value, strokeColor: document.getElementById('strokeColor').value, strokeWidth: document.getElementById('strokeWidth').value, text: document.getElementById('shapeText').value };
+                addToHistory([...shapes, newShape]);
+            }
+            drawShapes();
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (selectedShape !== null) {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const shape = shapes[selectedShape];
+                
+                if (shape.type === 'circle') {
+                    const dx = x - shape.x;
+                    const dy = y - shape.y;
+                    if (Math.abs(Math.sqrt(dx*dx + dy*dy) - shape.radius) < 10) {
+                        isResizing = true;
+                    } else if (Math.sqrt(dx*dx + dy*dy) <= shape.radius) {
+                        isDragging = true;
+                        dragStart = { x, y };
+                    }
+                } else if (shape.type === 'square') {
+                    const halfSize = shape.size / 2;
+                    if (Math.abs(x - (shape.x + halfSize)) < 10 && Math.abs(y - (shape.y + halfSize)) < 10) {
+                        isResizing = true;
+                    } else if (Math.abs(x - shape.x) <= halfSize && Math.abs(y - shape.y) <= halfSize) {
+                        isDragging = true;
+                        dragStart = { x, y };
+                    }
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (selectedShape !== null && (isResizing || isDragging)) {
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const shape = shapes[selectedShape];
+
+                const newShapes = [...shapes];
+                if (isResizing) {
+                    if (shape.type === 'circle') {
+                        const dx = x - shape.x;
+                        const dy = y - shape.y;
+                        newShapes[selectedShape] = {...shape, radius: Math.sqrt(dx*dx + dy*dy)};
+                    } else if (shape.type === 'square') {
+                        const dx = x - shape.x;
+                        const dy = y - shape.y;
+                        newShapes[selectedShape] = {...shape, size: Math.max(Math.abs(dx), Math.abs(dy)) * 2};
+                    }
+                } else if (isDragging) {
+                    const dx = x - dragStart.x;
+                    const dy = y - dragStart.y;
+                    newShapes[selectedShape] = {...shape, x: shape.x + dx, y: shape.y + dy};
+                    dragStart = { x, y };
+                }
+                shapes = newShapes;
+                drawShapes();
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (isResizing || isDragging) {
+                addToHistory([...shapes]);
+            }
+            isResizing = false;
+            isDragging = false;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            if (isResizing || isDragging) {
+                addToHistory([...shapes]);
+            }
+            isResizing = false;
+            isDragging = false;
+        });
+
+        document.getElementById('deleteButton').addEventListener('click', () => {
+            if (selectedShape !== null) {
+                const newShapes = shapes.filter((_, index) => index !== selectedShape);
+                addToHistory(newShapes);
+                selectedShape = null;
+                drawShapes();
+            }
+        });
+
+        document.getElementById('undoButton').addEventListener('click', () => {
+            if (historyIndex > 0) {
+                historyIndex--;
+                shapes = JSON.parse(JSON.stringify(history[historyIndex]));
+                selectedShape = null;
+                drawShapes();
+                updateControls();
+            }
+        });
+
+        document.getElementById('redoButton').addEventListener('click', () => {
+            if (historyIndex < history.length - 1) {
+                historyIndex++;
+                shapes = JSON.parse(JSON.stringify(history[historyIndex]));
+                selectedShape = null;
+                drawShapes();
+                updateControls();
+            }
+        });
+
+        function updateControls() {
+            if (selectedShape !== null) {
+                const shape = shapes[selectedShape];
+                document.getElementById('fillColor').value = shape.fillColor;
+                document.getElementById('strokeColor').value = shape.strokeColor;
+                document.getElementById('strokeWidth').value = shape.strokeWidth;
+                document.getElementById('shapeText').value = shape.text || '';
+            }
+        }
+
+        function updateLayerList() {
+            const layerList = document.getElementById('layers');
+            layerList.innerHTML = '';
+            shapes.forEach((shape, index) => {
+                const layerItem = document.createElement('li');
+                layerItem.className = `p-2 bg-gray-200 border rounded cursor-pointer ${index === selectedShape ? 'bg-blue-300' : ''}`;
+                layerItem.textContent = `${shape.type.charAt(0).toUpperCase() + shape.type.slice(1)} - ${index}`;
+                layerItem.draggable = true;
+
+                layerItem.addEventListener('click', () => {
+                    selectedShape = index;
+                    drawShapes();
+                    updateControls();
+                });
+
+                layerItem.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.setData('text/plain', index);
+                });
+
+                layerItem.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    layerItem.classList.add('bg-gray-300');
+                });
+
+                layerItem.addEventListener('dragleave', () => {
+                    layerItem.classList.remove('bg-gray-300');
+                });
+
+                layerItem.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const draggedIndex = e.dataTransfer.getData('text/plain');
+                    if (draggedIndex !== index) {
+                        const movedShape = shapes.splice(draggedIndex, 1)[0];
+                        shapes.splice(index, 0, movedShape);
+                        selectedShape = index;
+                        addToHistory(shapes);
+                    }
+                });
+
+                layerList.appendChild(layerItem);
+            });
+        }
+
+        ['fillColor', 'strokeColor', 'strokeWidth', 'shapeText'].forEach(id => {
+            document.getElementById(id).addEventListener('change', (e) => {
+                if (selectedShape !== null) {
+                    const newShapes = [...shapes];
+                    newShapes[selectedShape] = {...newShapes[selectedShape], [e.target.id]: e.target.value};
+                    addToHistory(newShapes);
+                }
+            });
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Delete' && selectedShape !== null) {
+                const newShapes = shapes.filter((_, index) => index !== selectedShape);
+                addToHistory(newShapes);
+                selectedShape = null;
+                drawShapes();
+            } else if (e.ctrlKey) {
+                switch (e.key) {
+                    case 'z':
+                        e.preventDefault();
+                        document.getElementById('undoButton').click();
+                        break;
+                    case 'y':
+                        e.preventDefault();
+                        document.getElementById('redoButton').click();
+                        break;
+                    case 'c':
+                        e.preventDefault();
+                        if (selectedShape !== null) {
+                            clipboard = JSON.parse(JSON.stringify(shapes[selectedShape]));
+                        }
+                        break;
+                    case 'x':
+                        e.preventDefault();
+                        if (selectedShape !== null) {
+                            clipboard = JSON.parse(JSON.stringify(shapes[selectedShape]));
+                            const newShapes = shapes.filter((_, index) => index !== selectedShape);
+                            addToHistory(newShapes);
+                            selectedShape = null;
+                            drawShapes();
+                        }
+                        break;
+                    case 'v':
+                        e.preventDefault();
+                        if (clipboard) {
+                            const newShape = {...clipboard, x: clipboard.x + 20, y: clipboard.y + 20};
+                            addToHistory([...shapes, newShape]);
+                        }
+                        break;
+                }
+            }
+        });
+
+        drawShapes();
+    </script>
+</body>
+</html>
